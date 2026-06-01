@@ -18,7 +18,9 @@ import httpx
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
+import db
 import risk_manager as rm
 from models import AccountState, Signal
 
@@ -33,6 +35,14 @@ CONFIG_PATH = BASE / "config.yaml"
 STATE_PATH = BASE / "state.json"
 
 app = FastAPI(title="Prop Firm Signal Relay")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    try:
+        db.init_db()
+    except Exception as exc:  # noqa: BLE001
+        print("[db] init échec:", exc)
 
 EMOJI = {"long": "🟢 LONG", "short": "🔴 SHORT"}
 LEVEL_EMOJI = {rm.OK: "✅", rm.WARN: "⚠️", rm.BLOCK: "⛔"}
@@ -135,6 +145,14 @@ async def webhook(request: Request) -> dict:
         verdicts = [rm.evaluate(acc, sig) for acc in accounts.values() if acc.enabled]
 
     await send_telegram(format_message(sig, verdicts))
+
+    # Journal : on enregistre les entrées (pas les alertes de gestion)
+    if sig.phase == "entry":
+        try:
+            db.insert_signal(sig, sig.rr)
+        except Exception as exc:  # noqa: BLE001
+            print("[db] insert échec:", exc)
+
     return {"sent": True, "market": sig.market, "phase": sig.phase,
             "verdicts": [{v.account: v.level} for v in verdicts]}
 
@@ -152,3 +170,21 @@ async def update_state(request: Request) -> dict:
     accounts[name] = AccountState(**cur)
     save_accounts(accounts)
     return {"updated": name, "state": accounts[name].model_dump()}
+
+
+# ----------------------------------------------------------------- dashboard
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard() -> str:
+    return (BASE / "dashboard.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/signals")
+async def api_signals() -> list:
+    return db.list_signals()
+
+
+@app.post("/api/signals/{sid}")
+async def api_update(sid: int, request: Request) -> dict:
+    body = await request.json()
+    db.update_signal(sid, result=body.get("result"), note=body.get("note"))
+    return {"ok": True}

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AXONE — Journal des signaux</title>
+<style>
+  :root { --navy:#102a43; --blue:#205c9e; --bg:#f4f6f9; --win:#1b9e4b; --loss:#d23b3b; --skip:#8a94a6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:#1a2330; }
+  header { background:var(--navy); color:#fff; padding:16px 18px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; opacity:.8; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; padding:14px 18px; }
+  .stat { background:#fff; border-radius:10px; padding:10px 14px; flex:1; min-width:90px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .stat .n { font-size:22px; font-weight:700; }
+  .stat .l { font-size:11px; color:#5a6473; text-transform:uppercase; letter-spacing:.04em; }
+  .wrap { padding:0 14px 40px; }
+  .card { background:#fff; border-radius:12px; padding:14px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.08); border-left:5px solid #ccc; }
+  .card.long { border-left-color:var(--win); }
+  .card.short { border-left-color:var(--loss); }
+  .row1 { display:flex; justify-content:space-between; align-items:center; }
+  .sym { font-weight:700; font-size:16px; }
+  .badge { font-size:10px; padding:2px 7px; border-radius:20px; background:#eef2f7; color:#41506b; margin-left:6px; }
+  .time { font-size:11px; color:#8a94a6; }
+  .lvls { font-size:13px; color:#41506b; margin:8px 0; }
+  .lvls b { color:#1a2330; }
+  .btns { display:flex; gap:8px; margin-top:8px; }
+  .btns button { flex:1; border:1px solid #d6deea; background:#fff; border-radius:8px; padding:9px; font-size:14px; cursor:pointer; }
+  .btns button.on.win { background:var(--win); color:#fff; border-color:var(--win); }
+  .btns button.on.loss { background:var(--loss); color:#fff; border-color:var(--loss); }
+  .btns button.on.skip { background:var(--skip); color:#fff; border-color:var(--skip); }
+  .note { width:100%; margin-top:8px; border:1px solid #d6deea; border-radius:8px; padding:8px; font-size:13px; font-family:inherit; }
+  .empty { text-align:center; color:#8a94a6; padding:40px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 AXONE — Journal des signaux</h1>
+  <p>Marque chaque signal : ✅ Gagné · ❌ Perdu · ⏭️ Pas pris — et ajoute une note.</p>
+</header>
+<div class="stats" id="stats"></div>
+<div class="wrap" id="list"></div>
+
+<script>
+const STRAT = {S1:'Liquidité', S2:'Pivot', EW:'Elliott'};
+async function load() {
+  const r = await fetch('/api/signals');
+  const data = await r.json();
+  renderStats(data);
+  renderList(data);
+}
+function renderStats(d) {
+  const win = d.filter(x=>x.result==='win').length;
+  const loss = d.filter(x=>x.result==='loss').length;
+  const skip = d.filter(x=>x.result==='skip').length;
+  const done = win+loss;
+  const wr = done ? Math.round(win/done*100) : 0;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="n">${d.length}</div><div class="l">Signaux</div></div>
+    <div class="stat"><div class="n" style="color:var(--win)">${win}</div><div class="l">Gagnés</div></div>
+    <div class="stat"><div class="n" style="color:var(--loss)">${loss}</div><div class="l">Perdus</div></div>
+    <div class="stat"><div class="n">${wr}%</div><div class="l">Réussite</div></div>`;
+}
+function renderList(d) {
+  const el = document.getElementById('list');
+  if (!d.length) { el.innerHTML = '<div class="empty">Aucun signal pour l\'instant.<br>Ils apparaîtront ici dès qu\'ils tombent sur Telegram.</div>'; return; }
+  el.innerHTML = d.map(s => {
+    const t = new Date(s.created_at).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const mkt = s.market==='futures' ? '⚙️' : '💱';
+    const side = s.side==='long' ? '🟢 LONG' : '🔴 SHORT';
+    return `<div class="card ${s.side}">
+      <div class="row1">
+        <div><span class="sym">${mkt} ${s.sym}</span><span class="badge">${STRAT[s.strat]||s.strat}</span><span class="badge">${side}</span></div>
+        <span class="time">${t}</span>
+      </div>
+      <div class="lvls">🎯 <b>${s.entry}</b> &nbsp; 🛑 ${s.sl} &nbsp; 🏁 ${s.tp} &nbsp; · R:R <b>${s.rr??'-'}</b></div>
+      <div class="btns">
+        <button class="win ${s.result==='win'?'on':''}" onclick="setRes(${s.id},'win')">✅ Gagné</button>
+        <button class="loss ${s.result==='loss'?'on':''}" onclick="setRes(${s.id},'loss')">❌ Perdu</button>
+        <button class="skip ${s.result==='skip'?'on':''}" onclick="setRes(${s.id},'skip')">⏭️ Pas pris</button>
+      </div>
+      <textarea class="note" placeholder="Note..." onchange="setNote(${s.id}, this.value)">${s.note||''}</textarea>
+    </div>`;
+  }).join('');
+}
+async function setRes(id, result) {
+  await fetch('/api/signals/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({result})});
+  load();
+}
+async function setNote(id, note) {
+  await fetch('/api/signals/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({note})});
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
