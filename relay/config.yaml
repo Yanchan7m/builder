@@ -1,0 +1,27 @@
+# Comptes prop firm suivis par le Risk Manager (état initial).
+# Une fois lancé, l'état courant vit dans state.json (mis à jour via /state).
+# Mets à jour eod_threshold / day_start_balance chaque jour à l'ouverture.
+accounts:
+  - name: "Apex-50k"
+    firm: "apex"
+    balance: 50000
+    eod_threshold: 47500        # ~ -2500 trailing (à confirmer selon ton compte)
+    day_start_balance: 50000
+    profit_target: 3000
+    daily_loss_limit: 1000      # à confirmer (Apex 2026)
+    consistency_pct: null
+    eval_profit: 0
+    risk_pct_normal: 1.0
+    enabled: true
+
+  - name: "LucidFlex-50k"
+    firm: "lucid"
+    balance: 50000
+    eod_threshold: 48000        # -2000 trailing EOD
+    day_start_balance: 50000
+    profit_target: 3000
+    daily_loss_limit: null      # Lucid : pas de daily loss
+    consistency_pct: 0.50       # aucun jour > 50% du profit total (=> < 1500$)
+    eval_profit: 0
+    risk_pct_normal: 1.0
+    enabled: true

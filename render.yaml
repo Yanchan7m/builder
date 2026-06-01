@@ -1,0 +1,17 @@
+# Déploiement cloud (Render) — bot 24/7, marche même ordinateur éteint.
+# Les 3 secrets (token, chat id, webhook secret) se règlent dans le dashboard Render.
+services:
+  - type: web
+    name: axone-signal-relay
+    runtime: python
+    rootDir: relay
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false

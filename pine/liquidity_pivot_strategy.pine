@@ -1,0 +1,304 @@
+//@version=6
+// =============================================================================
+//  Stratégie Prop Firm Futures — Prise de liquidité (S1) + Réaction pivot (S2)
+//  Indices US : NQ / ES / YM — Exécution M5, Tendance H1 (MA20/MA50)
+//  v1 backtest — TOUS les paramètres flous sont en input (réglables sur le graphe)
+//  /!\ Premier jet : à valider dans le Strategy Tester, on itère ensemble.
+// =============================================================================
+strategy("Liquidity + Pivot — Prop Firm v1", overlay=true,
+     initial_capital=50000, default_qty_type=strategy.fixed, default_qty_value=1,
+     calc_on_every_tick=false, pyramiding=2, process_orders_on_close=true)
+
+// ----------------------------------------------------------------------------
+//  INPUTS
+// ----------------------------------------------------------------------------
+gT        = "Tendance (H1)"
+maType    = input.string("SMA", "Type de MA", options=["SMA","EMA"], group=gT)
+maFastLen = input.int(20, "MA rapide", group=gT)
+maSlowLen = input.int(50, "MA lente",  group=gT)
+trendTF   = input.timeframe("60", "Timeframe tendance", group=gT)
+
+gS       = "Sessions (heure de New York — ajuste auto été/hiver)"
+tz       = input.string("America/New_York", "Timezone des sessions", group=gS)
+asiaSess = input.session("1700-0300", "Range Asie",    group=gS)   // ~23h-9h Paris
+londSess = input.session("0300-0930", "Range Londres", group=gS)   // ~9h-15h30 Paris
+usSess   = input.session("0935-1400", "Fenêtre entrée US (hors 5 1res min)", group=gS)  // ~15h35-20h Paris
+
+gL       = "Stratégie 1 — Prise de liquidité"
+useS1    = input.bool(true, "Activer S1 (liquidité)", group=gL)
+maxReint = input.int(3, "Réintégration max (bougies)", minval=1, group=gL)
+
+gP       = "Stratégie 2 — Réaction pivot / open daily"
+useS2    = input.bool(true, "Activer S2 (pivots)", group=gP)
+pivTolTk = input.int(8, "Tolérance de touche (ticks)", minval=0, group=gP)
+
+gR       = "RSI / Divergence"
+rsiLen   = input.int(14, "Période RSI", group=gR)
+divLbL   = input.int(5, "Pivot RSI - gauche", group=gR)
+divLbR   = input.int(5, "Pivot RSI - droite", group=gR)
+divValid = input.int(6, "Divergence valide pendant (bougies)", group=gR)
+
+gC          = "Patterns chandeliers"
+hammerRatio = input.float(2.0, "Marteau : mèche / corps min", group=gC)
+
+gW       = "Webhook"
+secret   = input.string("CHANGE_ME", "Secret (= WEBHOOK_SECRET du relais)", group=gW)
+
+gSc      = "Scoring & Risque"
+trendPts = input.int(2, "Points : continuation tendance", group=gSc)
+ratioMin = input.float(2.0, "Ratio TP minimum", group=gSc)
+slBufTk  = input.int(4, "Buffer SL (ticks)", group=gSc)
+
+tick = syminfo.mintick
+
+// ----------------------------------------------------------------------------
+//  TENDANCE H1
+// ----------------------------------------------------------------------------
+f_ma(src, len) => maType == "EMA" ? ta.ema(src, len) : ta.sma(src, len)
+maFast = request.security(syminfo.tickerid, trendTF, f_ma(close, maFastLen), lookahead=barmerge.lookahead_off)
+maSlow = request.security(syminfo.tickerid, trendTF, f_ma(close, maSlowLen), lookahead=barmerge.lookahead_off)
+trendDir = maFast > maSlow ? 1 : maFast < maSlow ? -1 : 0   // 1 haussier, -1 baissier
+
+// ----------------------------------------------------------------------------
+//  RANGES DE SESSION (Asie / Londres) — haut & bas figés à la fin de session
+// ----------------------------------------------------------------------------
+f_inSess(s) => not na(time(timeframe.period, s, tz))
+
+f_sessRange(active) =>
+    var float hi  = na
+    var float lo  = na
+    var float hiF = na
+    var float loF = na
+    if active and not active[1]
+        hi := high
+        lo := low
+    else if active
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+    if not active and active[1]
+        hiF := hi
+        loF := lo
+    [hiF, loF]
+
+asiaAct = f_inSess(asiaSess)
+londAct = f_inSess(londSess)
+inUS    = f_inSess(usSess)
+[asiaHi, asiaLo] = f_sessRange(asiaAct)
+[londHi, londLo] = f_sessRange(londAct)
+
+// ----------------------------------------------------------------------------
+//  PIVOTS JOURNALIERS + OPEN DAILY (niveaux institutionnels)
+// ----------------------------------------------------------------------------
+pH    = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_on)
+pL    = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_on)
+pC    = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+dOpen = request.security(syminfo.tickerid, "D", open,     lookahead=barmerge.lookahead_on)
+PP = (pH + pL + pC) / 3.0
+R1 = 2 * PP - pL
+S1 = 2 * PP - pH
+R2 = PP + (pH - pL)
+S2 = PP - (pH - pL)
+instLevels = array.from(PP, R1, S1, R2, S2, dOpen)
+
+// ----------------------------------------------------------------------------
+//  PATTERNS + RSI/DIVERGENCE — calculés en M5 ET M15 (confluence multi-TF)
+// ----------------------------------------------------------------------------
+gM     = "Confluence M15"
+useM15 = input.bool(true, "Exiger confirmation M15 (englobante + divergence)", group=gM)
+tf15   = input.timeframe("15", "Timeframe de confirmation", group=gM)
+
+// Renvoie [englobante haussière, englobante baissière, div haussière, div baissière]
+f_pd() =>
+    _body = math.abs(close - open)
+    _up   = high - math.max(close, open)
+    _dn   = math.min(close, open) - low
+    _bullE = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+    _bearE = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+    _ham = _dn >= hammerRatio * _body and _up <= _body
+    _inv = _up >= hammerRatio * _body and _dn <= _body
+    _bullP = _bullE or _ham
+    _bearP = _bearE or _inv
+    _rsi = ta.rsi(close, rsiLen)
+    _ph  = ta.pivothigh(high, divLbL, divLbR)
+    _pl  = ta.pivotlow(low,  divLbL, divLbR)
+    var float _pHp = na
+    var float _pHr = na
+    var float _pLp = na
+    var float _pLr = na
+    var int   _bearB = na
+    var int   _bullB = na
+    if not na(_ph)
+        _r = _rsi[divLbR]
+        if not na(_pHp) and _ph > _pHp and _r < _pHr
+            _bearB := bar_index            // prix HH, RSI LH -> baissier
+        _pHp := _ph
+        _pHr := _r
+    if not na(_pl)
+        _r = _rsi[divLbR]
+        if not na(_pLp) and _pl < _pLp and _r > _pLr
+            _bullB := bar_index            // prix LL, RSI HL -> haussier
+        _pLp := _pl
+        _pLr := _r
+    _bullD = not na(_bullB) and (bar_index - _bullB) <= divValid
+    _bearD = not na(_bearB) and (bar_index - _bearB) <= divValid
+    [_bullP, _bearP, _bullD, _bearD]
+
+[bullPat5,  bearPat5,  bullDiv5,  bearDiv5]  = f_pd()
+[bullPat15, bearPat15, bullDiv15, bearDiv15] = request.security(syminfo.tickerid, tf15, f_pd(), lookahead=barmerge.lookahead_off)
+
+// Confluence : un point n'est valide que s'il est confirmé en M5 (et M15 si activé)
+bullPattern = bullPat5 and (not useM15 or bullPat15)
+bearPattern = bearPat5 and (not useM15 or bearPat15)
+bullDiv     = bullDiv5 and (not useM15 or bullDiv15)
+bearDiv     = bearDiv5 and (not useM15 or bearDiv15)
+
+// ----------------------------------------------------------------------------
+//  STRAT 1 — sweep + réintégration rapide (≤ maxReint), une liquidité = une fois
+// ----------------------------------------------------------------------------
+f_liqGrab(level, isHigh) =>
+    var int   breach = na
+    var float swExt  = na          // extrême du sweep (pour le SL)
+    if level != level[1]           // nouveau niveau (nouvelle session) -> reset
+        breach := na
+        swExt  := na
+    sig = false
+    if not na(level) and inUS
+        if isHigh
+            if high > level
+                breach := na(breach) ? bar_index : breach
+                swExt  := na(swExt) ? high : math.max(swExt, high)
+            if not na(breach) and close < level     // réintégration
+                sig := (bar_index - breach) <= maxReint
+                breach := na
+        else
+            if low < level
+                breach := na(breach) ? bar_index : breach
+                swExt  := na(swExt) ? low : math.min(swExt, low)
+            if not na(breach) and close > level
+                sig := (bar_index - breach) <= maxReint
+                breach := na
+    [sig, swExt]
+
+[sigAH, extAH] = f_liqGrab(asiaHi, true)
+[sigAL, extAL] = f_liqGrab(asiaLo, false)
+[sigLH, extLH] = f_liqGrab(londHi, true)
+[sigLL, extLL] = f_liqGrab(londLo, false)
+
+s1Short    = useS1 and (sigAH or sigLH)
+s1Long     = useS1 and (sigAL or sigLL)
+s1ShortExt = sigAH ? extAH : extLH      // plus haut du sweep (SL short)
+s1LongExt  = sigAL ? extAL : extLL      // plus bas du sweep (SL long)
+
+// ----------------------------------------------------------------------------
+//  STRAT 2 — réaction sur un niveau institutionnel touché (± tolérance)
+// ----------------------------------------------------------------------------
+tol = pivTolTk * tick
+f_touch(level) => not na(level) and low <= level + tol and high >= level - tol
+bool  s2Long     = false
+bool  s2Short    = false
+float s2LongLvl  = na
+float s2ShortLvl = na
+if useS2 and inUS
+    for i = 0 to array.size(instLevels) - 1
+        lv = array.get(instLevels, i)
+        if f_touch(lv)
+            if bullPattern and close > lv and not s2Long
+                s2Long    := true
+                s2LongLvl := lv
+            if bearPattern and close < lv and not s2Short
+                s2Short    := true
+                s2ShortLvl := lv
+
+// ----------------------------------------------------------------------------
+//  SIGNAUX + SCORING
+// ----------------------------------------------------------------------------
+longSig  = s1Long  or s2Long
+shortSig = s1Short or s2Short
+
+f_score(dir, protByPivot) =>
+    pat  = dir == 1 ? bullPattern : bearPattern
+    div  = dir == 1 ? bullDiv : bearDiv
+    cont = dir == trendDir                         // continuation de tendance
+    // Points : continuation +2, englobante/marteau +1, divergence +1, protégé pivot +1
+    sc   = (cont ? trendPts : 0) + (pat ? 1 : 0) + (div ? 1 : 0) + (protByPivot ? 1 : 0)
+    // Englobante/marteau TOUJOURS requis ; en contre-tendance la divergence l'est aussi.
+    allowed = pat and (cont or div) and sc >= 2
+    [sc, allowed]
+
+// ----------------------------------------------------------------------------
+//  TP : 1er niveau institutionnel donnant ratio >= ratioMin
+// ----------------------------------------------------------------------------
+f_tp(entry, sl, dir) =>
+    risk = math.abs(entry - sl)
+    float best     = na
+    float bestDist = na
+    if risk > 0
+        for i = 0 to array.size(instLevels) - 1
+            lv = array.get(instLevels, i)
+            if not na(lv)
+                inDir = dir == 1 ? lv > entry : lv < entry
+                if inDir
+                    rr = math.abs(lv - entry) / risk
+                    d  = math.abs(lv - entry)
+                    if rr >= ratioMin and (na(bestDist) or d < bestDist)
+                        best     := lv
+                        bestDist := d
+    best
+
+// ----------------------------------------------------------------------------
+//  ENTRÉES
+// ----------------------------------------------------------------------------
+buf = slBufTk * tick
+
+// Un pivot/open protège-t-il le SL ? (un niveau institutionnel entre l'entrée et le SL)
+f_protected(entry, sl, dir) =>
+    bool prot = false
+    for i = 0 to array.size(instLevels) - 1
+        lv = array.get(instLevels, i)
+        if not na(lv)
+            if dir == 1 and sl < lv and lv < entry
+                prot := true
+            if dir == -1 and entry < lv and lv < sl
+                prot := true
+    prot
+
+if longSig and strategy.position_size == 0
+    entry = close
+    sl = s2Long ? s2LongLvl - buf : (na(s1LongExt) ? low : s1LongExt) - buf
+    prot = s2Long or f_protected(entry, sl, 1)
+    [sc, ok] = f_score(1, prot)
+    tp = f_tp(entry, sl, 1)
+    qty = sc >= 3 ? 2 : sc == 2 ? 1 : 0
+    if ok and qty > 0 and not na(tp) and sl < entry
+        strategy.entry("L", strategy.long, qty=qty, comment="L sc=" + str.tostring(sc))
+        strategy.exit("Lx", "L", stop=sl, limit=tp)
+        strat = s1Long ? "S1" : "S2"
+        msg = '{"secret":"' + secret + '","strat":"' + strat + '","sym":"' + syminfo.ticker + '","side":"long","entry":' + str.tostring(entry) + ',"sl":' + str.tostring(sl) + ',"tp":' + str.tostring(tp) + ',"score":' + str.tostring(sc) + ',"size":"' + (qty >= 2 ? "normal" : "half") + '"}'
+        alert(msg, alert.freq_once_per_bar_close)
+
+if shortSig and strategy.position_size == 0
+    entry = close
+    sl = s2Short ? s2ShortLvl + buf : (na(s1ShortExt) ? high : s1ShortExt) + buf
+    prot = s2Short or f_protected(entry, sl, -1)
+    [sc, ok] = f_score(-1, prot)
+    tp = f_tp(entry, sl, -1)
+    qty = sc >= 3 ? 2 : sc == 2 ? 1 : 0
+    if ok and qty > 0 and not na(tp) and sl > entry
+        strategy.entry("S", strategy.short, qty=qty, comment="S sc=" + str.tostring(sc))
+        strategy.exit("Sx", "S", stop=sl, limit=tp)
+        strat = s1Short ? "S1" : "S2"
+        msg = '{"secret":"' + secret + '","strat":"' + strat + '","sym":"' + syminfo.ticker + '","side":"short","entry":' + str.tostring(entry) + ',"sl":' + str.tostring(sl) + ',"tp":' + str.tostring(tp) + ',"score":' + str.tostring(sc) + ',"size":"' + (qty >= 2 ? "normal" : "half") + '"}'
+        alert(msg, alert.freq_once_per_bar_close)
+
+// ----------------------------------------------------------------------------
+//  VISUEL
+// ----------------------------------------------------------------------------
+plot(asiaHi, "Asie H",    color.new(color.orange,0),  1, plot.style_linebr)
+plot(asiaLo, "Asie L",    color.new(color.orange,0),  1, plot.style_linebr)
+plot(londHi, "Londres H", color.new(color.blue,0),    1, plot.style_linebr)
+plot(londLo, "Londres L", color.new(color.blue,0),    1, plot.style_linebr)
+plot(PP,     "PP",        color.new(color.gray,0),     1, plot.style_linebr)
+plot(dOpen,  "Open D",    color.new(color.fuchsia,0),  1, plot.style_linebr)
+bgcolor(inUS ? color.new(color.green, 92) : na, title="Session US")
+plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar, color.green, size=size.tiny)
+plotshape(shortSig, "Short", shape.triangledown, location.abovebar, color.red,   size=size.tiny)

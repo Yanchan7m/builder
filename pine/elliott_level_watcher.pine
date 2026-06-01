@@ -1,0 +1,81 @@
+//@version=6
+// =============================================================================
+//  Elliott Level Watcher  -  Forex (signal-only, semi-manuel)
+//  TOI tu fais le comptage des vagues (ou tu copies ta source) et tu entres
+//  3 niveaux : Confirmation / Invalidation / Cible. Le bot surveille le prix
+//  et envoie sur Telegram : entree -> breakeven -> TP / invalidation.
+//
+//  Un graphe = une paire = un setup. Ajoute l'indicateur sur chaque paire
+//  (EURUSD, GBPUSD, USDJPY...) avec ses propres niveaux, et cree une alerte
+//  "Any alert() function call" sur chaque graphe.
+// =============================================================================
+indicator("Elliott Level Watcher", overlay=true)
+
+gT     = "Setup (depuis ton analyse Elliott)"
+dir    = input.string("Long", "Sens", options=["Long", "Short"], group=gT)
+conf   = input.float(0.0, "Confirmation level (entree)", group=gT)
+inval  = input.float(0.0, "Invalidation (SL)", group=gT)
+tgt    = input.float(0.0, "Cible (TP)", group=gT)
+
+gB     = "Gestion"
+useBE  = input.bool(true, "Alerter passage au breakeven", group=gB)
+beAtR  = input.float(1.0, "Breakeven a (x R)", minval=0.1, group=gB)
+
+gW     = "Webhook"
+mkt    = input.string("forex", "Marché", options=["forex", "futures"], group=gW)  // futures = passe par le Risk Manager prop firm
+secret = input.string("CHANGE_ME", "Secret (= WEBHOOK_SECRET du relais)", group=gW)
+
+// --- calculs --------------------------------------------------------------
+isLong = dir == "Long"
+risk   = math.abs(conf - inval)
+rr     = risk > 0 ? math.abs(tgt - conf) / risk : 0.0
+beTrig = isLong ? conf + beAtR * risk : conf - beAtR * risk
+valid  = conf != 0 and inval != 0 and tgt != 0
+
+// croisements calcules a chaque barre (bonne pratique Pine)
+crossUp = ta.crossover(close, conf)
+crossDn = ta.crossunder(close, conf)
+
+// --- machine a etats : 0 attente, 1 actif, 2 clos ------------------------
+var int  state  = 0
+var bool beDone = false
+
+f_alert(phase) =>
+    m = '{"secret":"' + secret + '","market":"' + mkt + '","strat":"EW","phase":"' + phase +
+        '","sym":"' + syminfo.ticker + '","side":"' + (isLong ? "long" : "short") +
+        '","entry":' + str.tostring(conf) + ',"sl":' + str.tostring(inval) +
+        ',"tp":' + str.tostring(tgt) +
+        ',"score":' + str.tostring(math.round(rr)) + ',"size":"normal"}'
+    alert(m, alert.freq_once_per_bar_close)
+
+if valid and barstate.isconfirmed
+    if state == 0
+        if isLong ? crossUp : crossDn
+            state := 1
+            f_alert("entry")
+    else if state == 1
+        if useBE and not beDone and (isLong ? high >= beTrig : low <= beTrig)
+            beDone := true
+            f_alert("breakeven")
+        hitTP = isLong ? high >= tgt : low <= tgt
+        hitSL = isLong ? low <= inval : high >= inval
+        if hitTP
+            state := 2
+            f_alert("tp")
+        else if hitSL
+            state := 2
+            f_alert("sl")
+
+// --- visuel ---------------------------------------------------------------
+hline(conf  != 0 ? conf  : na, "Confirmation", color=color.new(color.purple, 0), linewidth=2)
+hline(inval != 0 ? inval : na, "Invalidation", color=color.new(color.red, 0), linewidth=2)
+hline(tgt   != 0 ? tgt   : na, "Cible",        color=color.new(color.teal, 0), linewidth=2)
+
+stTxt = state == 0 ? "attente" : state == 1 ? "actif" : "clos"
+var label lb = na
+if barstate.islast and valid
+    label.delete(lb)
+    lb := label.new(bar_index, tgt, (isLong ? "LONG  " : "SHORT  ") + syminfo.ticker +
+         "  |  R:R " + str.tostring(rr, "#.0") + "  |  " + stTxt,
+         style=label.style_label_left, color=color.new(color.black, 10),
+         textcolor=color.white, size=size.small)
