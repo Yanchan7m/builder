@@ -1,0 +1,21 @@
+name: keep-alive
+
+# Garde le serveur Render (gratuit) réveillé : il s'endort après 15 min d'inactivité.
+# On le pingue toutes les ~10 min pour qu'un signal ne tombe jamais sur un serveur endormi.
+# Tourne sur l'infra GitHub (gratuit, dépôt public) — rien à faire côté utilisateur.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # toutes les 10 minutes
+  workflow_dispatch:           # permet aussi un lancement manuel
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 \
+            https://axone-capital-bot-26gc.onrender.com/health)
+          echo "HTTP $code"
+          test "$code" = "200"
