@@ -188,3 +188,9 @@ async def api_update(sid: int, request: Request) -> dict:
     body = await request.json()
     db.update_signal(sid, result=body.get("result"), note=body.get("note"))
     return {"ok": True}
+
+
+@app.delete("/api/signals/{sid}")
+async def api_delete(sid: int) -> dict:
+    db.delete_signal(sid)
+    return {"ok": True}

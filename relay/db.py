@@ -85,3 +85,10 @@ def update_signal(sid: int, result=None, note=None) -> None:
     vals.append(sid)
     with _conn() as c, c.cursor() as cur:
         cur.execute(f"UPDATE signals SET {', '.join(sets)} WHERE id=%s", vals)
+
+
+def delete_signal(sid: int) -> None:
+    if not ENABLED:
+        return
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM signals WHERE id=%s", (sid,))

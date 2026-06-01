@@ -46,6 +46,8 @@
   .pill.short{background:rgba(239,77,90,.15);color:var(--loss);}
   .pill.rr{background:rgba(63,182,168,.15);color:var(--teal);}
   .time{font-size:11px;color:var(--mut);white-space:nowrap;}
+  .del{margin-top:6px;background:none;border:none;color:#5a6c84;font-size:15px;cursor:pointer;padding:2px;}
+  .del:hover{color:var(--loss);}
   .lv{display:flex;gap:14px;margin:12px 0 4px 8px;font-size:13px;color:var(--mut);flex-wrap:wrap;}
   .lv b{color:var(--txt);font-weight:700;}
   .seg{display:flex;gap:8px;margin:12px 0 0 8px;}
@@ -130,7 +132,10 @@ function renderList(){
             <span class="pill">${s.size}</span>
           </div>
         </div>
-        <div class="time">${t}</div>
+        <div style="text-align:right">
+          <div class="time">${t}</div>
+          <button class="del" onclick="delSig(${s.id})" title="Supprimer">🗑️</button>
+        </div>
       </div>
       <div class="lv">🎯 Entrée <b>${s.entry}</b> &nbsp;·&nbsp; 🛑 SL <b>${s.sl}</b> &nbsp;·&nbsp; 🏁 TP <b>${s.tp}</b></div>
       <div class="seg">
@@ -146,6 +151,11 @@ async function setRes(id,result){
   const s=DATA.find(x=>x.id===id); if(s)s.result=s.result===result?'':result;
   renderStats();renderList();
   await fetch('/api/signals/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:s?s.result:result})});
+}
+async function delSig(id){
+  if(!confirm('Supprimer ce signal ?'))return;
+  DATA=DATA.filter(x=>x.id!==id); renderStats(); renderList();
+  await fetch('/api/signals/'+id,{method:'DELETE'});
 }
 async function setNote(id,note){
   await fetch('/api/signals/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note})});
