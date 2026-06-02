@@ -13,9 +13,15 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping /health
+      - name: Ping AXONE signal-relay /health
         run: |
           code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 \
             https://axone-capital-bot-26gc.onrender.com/health)
-          echo "HTTP $code"
+          echo "AXONE  HTTP $code"
+          test "$code" = "200"
+      - name: Ping AXONE veille /health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 \
+            https://axone-veille-news.onrender.com/health)
+          echo "VEILLE HTTP $code"
           test "$code" = "200"
