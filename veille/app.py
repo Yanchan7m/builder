@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import JoinChannelRequest
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -157,6 +158,14 @@ async def lifespan(app: FastAPI):
         handle_message, events.NewMessage(chats=SOURCES)
     )
     await client.start()
+    # IMPORTANT : Telegram ne pousse les nouveaux messages en temps réel que
+    # pour les canaux REJOINTS. On s'abonne donc à chaque source au démarrage.
+    for src in SOURCES:
+        try:
+            await client(JoinChannelRequest(src))
+            log.info("Abonné au canal @%s", src)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Impossible de rejoindre @%s : %s", src, e)
     me = await client.get_me()
     log.info(
         "Connecté en tant que %s — surveille : %s -> %s",
