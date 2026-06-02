@@ -219,6 +219,7 @@ f_score(dir, protByPivot) =>
     pat  = dir == 1 ? bullPattern : bearPattern
     div  = dir == 1 ? bullDiv : bearDiv
     cont = dir == trendDir                         // continuation de tendance
+    // La tendance H1 = une CONFIRMATION en plus (+2 pts), pas un veto.
     // Points : continuation +2, englobante/marteau +1, divergence +1, protégé pivot +1
     sc   = (cont ? trendPts : 0) + (pat ? 1 : 0) + (div ? 1 : 0) + (protByPivot ? 1 : 0)
     // Englobante/marteau TOUJOURS requis ; en contre-tendance la divergence l'est aussi.

@@ -1,0 +1,36 @@
+# Configuration du bot de veille AXONE.
+# Tu peux éditer ce fichier à la main : ajouter des canaux à suivre, ajouter
+# ou retirer des mots-clés. Pas besoin de toucher au code.
+
+# Canaux Telegram publics à surveiller (sans le @).
+sources:
+  - bricsnews
+  - WatcherGuru
+  # - Infositons   # <-- à confirmer : orthographe exacte du 3e canal
+
+# Filtre par catégories de mots-clés.
+# Un message est relayé s'il contient AU MOINS un mot d'une catégorie.
+# Les mots sont insensibles aux majuscules et aux accents.
+keywords:
+  devises:
+    label: "💱 Devises"
+    mots: ["$", "€", "dollar", "euro", "usd", "eur", "dxy", "forex", "greenback"]
+  indices:
+    label: "📈 Indices / Actions"
+    mots: ["nasdaq", "s&p", "sp500", "s&p 500", "dow jones", "wall street",
+           "stock market", "bourse", "russell"]
+  or:
+    label: "🥇 Or"
+    mots: ["gold", "l'or", "once d'or", "xau", "métaux précieux", "lingot",
+           "bullion"]
+  ipo:
+    label: "🚀 IPO"
+    mots: ["ipo", "introduction en bourse", "mise en bourse", "going public",
+           "files to go public", "public listing", "debut"]
+  crypto:
+    label: "₿ Crypto"
+    mots: ["bitcoin", "btc", "ethereum", "eth", "crypto", "altcoin", "solana",
+           "sol", "ripple", "xrp", "binance", "stablecoin"]
+
+# Ne pas relayer deux fois le même message (anti-doublon, en mémoire).
+anti_doublon: true
